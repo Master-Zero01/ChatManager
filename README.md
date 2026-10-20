@@ -1,4 +1,4 @@
-# ChatManager 6.4
+# ChatManager
 
 **Advanced Minecraft Chat Moderation & Management**
 
