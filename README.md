@@ -145,15 +145,6 @@ A threshold of `0.80` represents an 80% similarity threshold. Adjust it carefull
 
 **Important:** Preserve the existing configuration structure when editing settings. Back up your configuration before upgrading between versions.
 
-## Development
-
-- **Plugin name:** ChatManager
-- **Version:** 6.4
-- **Main class:** `org.me.chatManager.ChatManager`
-- **Language:** Java
-- **Build system:** Maven
-- **Target API:** Paper 1.21.11
-
 ## License
 
 No license is specified in the supplied project metadata. Contact the project maintainer for permission before redistributing or modifying the plugin for public distribution.
