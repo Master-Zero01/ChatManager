@@ -1,0 +1,526 @@
+# ======================================================
+# ChatManager
+# Advanced Chat Moderation System
+# ======================================================
+
+
+chat:
+
+  enabled: true
+
+  log-to-console: true
+
+
+  # ======================================================
+  # Unicode / Normalization
+  # ======================================================
+
+  # Blocks non ASCII characters.
+  #
+  # Recommended:
+  # false
+  #
+  # TextNormalizer still performs:
+  # - Unicode normalization
+  # - Homoglyph replacement
+  # - Leetspeak normalization
+  #
+  block-unicode: false
+
+
+  # Allow legacy colors and hex colors
+  allow-color: true
+
+
+
+
+  # ======================================================
+  # Chat Cooldown
+  # ======================================================
+
+  cooldown:
+
+    enabled: true
+
+    time-seconds: 3
+
+    bypass-permission: "chatmanager.bypass.cooldown"
+
+
+
+
+
+  # ======================================================
+  # Phrase Filter
+  #
+  # Detects:
+  #
+  # discord.gg
+  # d!scord.gg
+  # d i s c o r d . g g
+  #
+  # Uses normalization:
+  # - lowercase
+  # - homoglyph replacement
+  # - punctuation removal
+  # - spacing removal
+  #
+  # ======================================================
+
+  phrases:
+
+    enabled: true
+
+    bypass-permission: "chatmanager.bypass.phrases"
+
+
+    # Blocks anything shaped like a domain/link
+    # (qroma.org, discord.com, test.com/invite) regardless
+    # of whether it's in the word list below — a fixed list
+    # can never keep up with new domains a spammer
+    # registers.
+    block-domain-patterns: true
+
+
+    words:
+
+      - "discord.gg"
+      - "discord invite"
+      - "join my server"
+      - "join our server"
+      - "free ranks"
+      - "free nitro"
+      - "buy ranks"
+      - "selling ranks"
+      - "giveaway"
+      - "crypto giveaway"
+      - "click here"
+      - "visit my website"
+
+
+
+
+
+  # ======================================================
+  # Duplicate Detection
+  # ======================================================
+
+  no-duplicate:
+
+    enabled: true
+
+    bypass-permission: "chatmanager.bypass.duplicate"
+
+
+
+
+
+  # ======================================================
+  # Anti Spam
+  # ======================================================
+
+  anti-spam:
+
+
+    enabled: true
+
+
+    # Similarity percentage
+    similarity-threshold: 90
+
+    # Compare a new message against the last three accepted messages, not just
+    # the immediately previous message. Long tokens (>12 chars) are excluded
+    # from this comparison to reduce false positives from coordinates / IDs.
+    recent-similarity:
+      enabled: true
+      threshold: 0.80
+
+
+    # Messages stored per player
+    max-history: 20
+
+
+    # Analysis time window
+    time-window-ms: 10000
+
+
+
+
+    # ==================================================
+    # Caps Detection
+    # ==================================================
+
+    prevent-caps: true
+
+
+    # Percentage of letters allowed to be uppercase
+    #
+    # 0.60 = 60%
+    #
+    max-caps-ratio: 0.60
+
+
+
+
+
+    # ==================================================
+    # Character Flood
+    # ==================================================
+
+    prevent-flood: true
+
+
+
+
+
+    # ==================================================
+    # Repetition Detection
+    # ==================================================
+
+    prevent-repetition: true
+
+
+
+
+
+    # Permission bypass
+    bypass-permission: "chatmanager.bypass.spam"
+
+
+
+
+
+    # ==================================================
+    # Template Spam
+    #
+    # Detects:
+    #
+    # "join my server abc"
+    # "join my server xyz"
+    # "join my server 123"
+    #
+    # ==================================================
+
+    template-detection:
+
+
+      enabled: true
+
+
+      # How many recent messages to remember per player
+      history-window: 20
+
+
+      # A message must have at least this many significant
+      # words (common filler words don't count) before it's
+      # even eligible to be flagged. This stops a short
+      # message like "again" or "hi" from being flagged just
+      # because that one word was used before.
+      min-significant-words: 2
+
+
+      # A word counts as "templated" once it has appeared
+      # at least this many times within the history window.
+      # Kept fairly high so a player occasionally reusing a
+      # word in normal conversation doesn't cross it, while
+      # an actual spam bot (same word every few seconds)
+      # still crosses it quickly.
+      word-repeat-count-threshold: 4
+
+
+      # Fraction (0.0-1.0) of a message's significant words
+      # that must be "templated" to flag the message
+      message-word-repeat-ratio: 0.5
+
+
+
+
+
+
+
+  # ======================================================
+  # Staff Notifications
+  # ======================================================
+
+
+  notify-staff: true
+
+
+  staff-notify-permission: "chatmanager.notify"
+
+
+  staff-notify-message:
+    "&e[Staff] {player} triggered {reason} ({similarity}% match)"
+
+
+
+
+
+
+  # ======================================================
+  # Moderation Messages
+  # ======================================================
+
+
+  messages:
+
+
+    cooldown:
+      "&cPlease wait {time}s before chatting again."
+
+
+    duplicate:
+      "&cPlease don't send the same message twice."
+
+
+    spam:
+      "&cPlease don't repeat or spam similar messages."
+
+
+    caps:
+      "&cPlease avoid using too many capital letters."
+
+
+    flood:
+      "&cPlease avoid character flooding."
+
+
+    phrase-blocked:
+      "&cYour message contains blocked content."
+
+
+    template-spam:
+      "&cPlease stop sending repetitive spam-like messages."
+
+
+
+
+
+  # ======================================================
+  # Suicide Command
+  # ======================================================
+
+  suicide:
+
+    enabled: true
+
+
+
+
+
+# ======================================================
+# Join Date Command
+# ======================================================
+
+
+joindate:
+
+
+  enabled: true
+
+
+  message:
+    "&aPlayer &e{player} &afirst joined on: &e{date}"
+
+
+  never-joined:
+    "&e{player} &ahas never joined before."
+
+
+  console-usage:
+    "&cConsole must specify a player name."
+
+
+  not-found:
+    "&cPlayer &e{player} &cis not online or does not exist."
+
+
+  date-format:
+    "yyyy-MM-dd HH:mm:ss"
+
+
+
+
+
+
+# ======================================================
+# Whisper Settings
+# ======================================================
+
+
+whisper:
+
+
+  messages:
+
+
+    tells-disabled:
+      "&cThat player has private messages disabled."
+
+
+
+  format:
+
+
+    sender:
+      "&7[&dYou &7→ &d{target}&7] &f{message}"
+
+
+    target:
+      "&7[&d{sender} &7→ &dYou&7] &f{message}"
+
+
+
+  spy:
+
+
+    enabled: true
+
+
+    format:
+      "&8[&cSpy&8] &7{sender} → {target}: {message}"
+
+
+
+
+
+
+# ======================================================
+# Ignore Settings
+# ======================================================
+
+
+ignore:
+
+
+  blocked:
+    "&cThat player is ignoring you."
+
+
+
+
+
+
+
+# ======================================================
+# Toggle Settings
+# ======================================================
+
+
+toggles:
+
+
+  chat:
+
+    enabled:
+      "&aYou will now see chat messages."
+
+    disabled:
+      "&eYou will no longer see chat messages."
+
+
+
+  tells:
+
+    enabled:
+      "&aYou will now receive private messages."
+
+    disabled:
+      "&eYou will no longer receive private messages."
+
+
+
+  connection:
+
+    enabled:
+      "&aYou will now see connection messages."
+
+    disabled:
+      "&eYou will no longer see connection messages."
+
+
+
+
+
+
+
+# ======================================================
+# Broadcast Settings
+# ======================================================
+
+
+broadcast:
+
+
+  enabled: true
+
+
+  mode: "RANDOM"
+
+
+  prefix:
+    "&8[&6Broadcast&8] &r"
+
+
+
+  format:
+    "{prefix}{message}"
+
+
+
+  messages:
+
+
+    - "&cBroadcast message number 1"
+
+    - "&cBroadcast message number 2"
+
+    - "&cBroadcast message number 3"
+
+
+
+  interval-seconds: 60
+
+
+
+
+
+
+# ======================================================
+# General Messages
+# ======================================================
+
+
+messages:
+
+
+  no-permission:
+    "&cYou do not have permission to use this command."
+
+
+  reload:
+    "&aChatManager configuration reloaded successfully."
+
+
+  unknown-command:
+    "&cUnknown command. Use /help for a list of commands."
+
+
+
+
+
+
+# ======================================================
+# Plugin Information
+# ======================================================
+
+
+plugin-info:
+
+  version-check: true
+
+  author:
+    "_MasterZero"
+
+  website:
+    ""
