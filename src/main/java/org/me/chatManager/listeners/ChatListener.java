@@ -12,6 +12,7 @@ import org.me.chatManager.ChatManager;
 import org.me.chatManager.moderation.ChatPipeline;
 import org.me.chatManager.moderation.ModerationResult;
 import org.me.chatManager.util.ChatUtil;
+import org.me.chatManager.util.ColorCodeSanitizer;
 import org.me.chatManager.util.IgnoreUtil;
 
 
@@ -164,26 +165,15 @@ public class ChatListener implements Listener {
         /*
          * Color handling
          */
-        if (player.hasPermission(
-                "chatmanager.color"
-        )) {
-
-
-            message =
-                    ChatUtil.color(
-                            message
-                    );
-
-
+        boolean colorAllowed = cfg.getBoolean("chat.allow-color", true)
+                && player.hasPermission("chatmanager.color");
+        if (colorAllowed) {
+            message = ChatUtil.color(message);
         } else {
-
-
-            message =
-                    message.replaceAll(
-                            "&(?i)[0-9a-fk-or]",
-                            ""
-                    );
-
+            // Strip both legacy and &#RRGGBB codes when formatting is disabled
+            // or the sender lacks permission; otherwise hex attempts can leak
+            // into chat as literal text.
+            message = ColorCodeSanitizer.strip(message);
         }
 
 

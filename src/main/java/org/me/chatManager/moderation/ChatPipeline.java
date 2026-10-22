@@ -11,13 +11,6 @@ import org.me.chatManager.spam.SimilarityEngine;
 import org.me.chatManager.spam.TemplateSpamAnalyzer;
 
 import java.util.UUID;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 
@@ -38,8 +31,8 @@ public class ChatPipeline {
 
     private final TemplateSpamAnalyzer templateSpamAnalyzer;
 
-    /** Raw recent messages used by the three-message similarity guard. */
-    private final Map<UUID, Deque<String>> rawMessageHistory = new ConcurrentHashMap<>();
+    /** Recent accepted messages, compared with spaces and word boundaries preserved. */
+    private final RecentSimilarityTracker recentSimilarityTracker;
 
 
 
@@ -64,34 +57,6 @@ public class ChatPipeline {
 
 
 
-    /*
-     * Matches anything shaped like a domain/link
-     * ("qroma.org", "discord.com", "test.com/invite")
-     * regardless of whether it's on the static phrase
-     * list — a fixed word list can never keep up with new
-     * domains a spammer registers.
-     *
-     * Deliberately checked against the RAW message (see
-     * below) rather than moderationMessage, since that
-     * normalization strips punctuation entirely — the dot
-     * is exactly what this pattern needs to see.
-     */
-    private static final Pattern DOMAIN_PATTERN =
-            Pattern.compile(
-                    "(?i)\\b[a-z0-9-]{2,}\\s*(?:\\.|\\bdot\\b|\\bd0t\\b)\\s*(com|net|org|gg|io|co|me|link|xyz|" +
-                            "tv|info|biz|shop|store|site|dev|app|club|online|website|us|uk|de|ru|cn|top|pro|wiki|gg)\\b"
-            );
-
-    private static final int RAW_HISTORY_LIMIT = 3;
-    private static final double RAW_SIMILARITY_THRESHOLD = 0.80;
-    private static final Pattern LONG_WORD_SPLIT = Pattern.compile("\\s+");
-
-
-
-
-
-
-
     public ChatPipeline(
             ChatManager plugin,
             TextNormalizer normalizer,
@@ -106,15 +71,12 @@ public class ChatPipeline {
         this.phraseMatcher = phraseMatcher;
 
         this.similarityEngine = similarityEngine;
+        this.recentSimilarityTracker = new RecentSimilarityTracker(
+                plugin.getConfig().getInt("chat.anti-spam.max-history", 10));
 
-        this.duplicateTracker =
-                new DuplicateTracker(
-                        plugin.getConfig()
-                                .getInt(
-                                        "chat.anti-spam.max-history",
-                                        20
-                                )
-                );
+        this.duplicateTracker = new DuplicateTracker(
+                plugin.getConfig().getInt("chat.anti-spam.max-history", 20),
+                plugin.getConfig().getLong("chat.no-duplicate.time-window-ms", 30_000L));
 
 
         this.rateLimiter =
@@ -137,7 +99,8 @@ public class ChatPipeline {
                                 .getInt(
                                         "chat.anti-spam.template-detection.min-significant-words",
                                         2
-                                )
+                                ),
+                        plugin.getConfig().getLong("chat.anti-spam.time-window-ms", 10_000L)
                 );
 
     }
@@ -229,14 +192,6 @@ public class ChatPipeline {
 
 
 
-        String normalized =
-                normalizer.normalizeComparison(
-                        moderationMessage
-                );
-
-
-
-
         /*
          * Same normalization as moderationMessage, but WITHOUT
          * collapsing repeated characters. moderationMessage
@@ -254,41 +209,34 @@ public class ChatPipeline {
                         message
                 );
 
+        // Strip appended 12+ character tokens from the uncollapsed version.
+        // Counting before repeat-collapse matters: normalization could shrink a
+        // 12-character nonce such as "rZEJgFUlFfFo" below the length threshold.
+        String spamComparisonMessage =
+                SpamMessageNormalizer.stripTrailingLongTokens(repetitionMessage);
+        String normalized = normalizer.normalizeComparison(spamComparisonMessage);
+        String canonicalSpamMessage = normalizer.normalizeModeration(spamComparisonMessage);
 
-        // Mirror the proven three-message similarity guard: ignore very short
-        // messages and long individual tokens so coordinate strings / elongated
-        // words do not dominate the comparison. History is only committed after
-        // the message passes moderation.
-        if (!player.hasPermission(cfg.getString(
-                        "chat.anti-spam.bypass-permission",
-                        "chatmanager.bypass.spam"
-                ))
-                && normalized.length() >= 20
-                && cfg.getBoolean("chat.anti-spam.recent-similarity.enabled", true)) {
-            String comparison = filterLongWords(normalized);
-            Deque<String> history = rawMessageHistory.get(uuid);
-            if (history != null) {
-                synchronized (history) {
-                    for (String previous : history) {
-                        if (previous.length() < 20) continue;
-                        if (similarityPercentage(filterLongWords(previous), comparison)
-                                >= cfg.getDouble("chat.anti-spam.recent-similarity.threshold", RAW_SIMILARITY_THRESHOLD)) {
-                            return ModerationResult.blocked(
-                                    cfg.getString("chat.messages.spam", "&cPlease don't send very similar messages repeatedly."),
-                                    "RECENT_SIMILAR_MESSAGE",
-                                    similarityPercentage(filterLongWords(previous), comparison) * 100.0
-                            );
-                        }
-                    }
-                }
+        // Similarity checks use this same suffix-free canonical message so
+        // duplicate and similarity tracking agree on what constitutes the body.
+        if (cfg.getBoolean("chat.anti-spam.enabled", true)
+                && cfg.getBoolean("chat.anti-spam.recent-similarity.enabled", true)
+                && !hasBypass(player, cfg, "chat.anti-spam.bypass-permission", "chatmanager.bypass.spam")) {
+            double legacyThreshold = cfg.getInt("chat.anti-spam.similarity-threshold", 80) / 100.0;
+            double threshold = cfg.getDouble(
+                    "chat.anti-spam.recent-similarity.threshold", legacyThreshold);
+            long similarityWindow = cfg.getLong(
+                    "chat.anti-spam.recent-similarity.time-window-ms",
+                    cfg.getLong("chat.no-duplicate.time-window-ms", 30_000L));
+            double similarity = recentSimilarityTracker.findSimilarity(
+                    uuid, canonicalSpamMessage, threshold, similarityWindow);
+            if (similarity >= 0.0) {
+                return ModerationResult.blocked(
+                        cfg.getString("chat.messages.spam",
+                                "&cPlease don't send very similar messages repeatedly."),
+                        "RECENT_SIMILAR_MESSAGE", similarity * 100.0);
             }
         }
-
-
-
-
-
-
 
 
 
@@ -302,81 +250,33 @@ public class ChatPipeline {
          * dіscord.gg
          *
          */
-        if (cfg.getBoolean(
-                "chat.phrases.enabled",
-                true
-        )) {
-
-
-            if (!player.hasPermission(
-                    cfg.getString(
-                            "chat.phrases.bypass-permission",
-                            "chatmanager.bypass.phrases"
-                    )
-            )) {
-
-
-
-                if (phraseMatcher.firstMatch(
-                        moderationMessage,
-                        cfg.getStringList(
-                                "chat.phrases.words"
-                        )
-                ).isPresent()) {
-
-
-
-                    return ModerationResult.blocked(
-                            cfg.getString(
-                                    "chat.messages.phrase-blocked",
-                                    "&cYour message contains blocked content."
-                            ),
-                            "BLOCKED_PHRASE"
-                    );
-
-                }
-
-
-
-                if (cfg.getBoolean(
-                        "chat.phrases.block-domain-patterns",
-                        true
-                )
-                        &&
-                        isDomainLike(message)) {
-
-
-                    return ModerationResult.blocked(
-                            cfg.getString(
-                                    "chat.messages.phrase-blocked",
-                                    "&cYour message contains blocked content."
-                            ),
-                            "BLOCKED_DOMAIN"
-                    );
-
-                }
-
+        if (!hasBypass(player, cfg, "chat.phrases.bypass-permission", "chatmanager.bypass.phrases")) {
+            if (cfg.getBoolean("chat.phrases.enabled", true)
+                    && phraseMatcher.firstMatch(moderationMessage,
+                            cfg.getStringList("chat.phrases.words")).isPresent()) {
+                return ModerationResult.blocked(
+                        cfg.getString("chat.messages.phrase-blocked",
+                                "&cYour message contains blocked content."),
+                        "BLOCKED_PHRASE");
             }
 
+            // Domain protection is independent of the configurable phrase list.
+            if (cfg.getBoolean("chat.phrases.block-domain-patterns", true)
+                    && isDomainLike(message)) {
+                return ModerationResult.blocked(
+                        cfg.getString("chat.messages.phrase-blocked",
+                                "&cYour message contains blocked content."),
+                        "BLOCKED_DOMAIN");
+            }
         }
-
-
-
-
-
-
 
 
 
         /*
          * Chat cooldown
          */
-        if (!player.hasPermission(
-                cfg.getString(
-                        "chat.cooldown.bypass-permission",
-                        "chatmanager.bypass.cooldown"
-                )
-        )) {
+        if (cfg.getBoolean("chat.cooldown.enabled", true)
+                && !hasBypass(player, cfg, "chat.cooldown.bypass-permission", "chatmanager.bypass.cooldown")) {
 
 
             int seconds =
@@ -417,79 +317,44 @@ public class ChatPipeline {
 
 
 
-        boolean skipSpamChecks =
+        // Exact duplicate checks must run for every message, including short
+        // one-word messages. Only broader similarity/template analysis is
+        // gated to reduce false positives on tiny, common chat responses.
+        boolean skipTemplateChecks =
                 normalized.length() < 8
-                        ||
-                        wordCount(moderationMessage) < 2;
+                        || wordCount(spamComparisonMessage) < 2;
 
 
 
 
 
         /*
-         * Flood checks
+         * Character flooding. Repeated word/sequence checks are controlled
+         * separately by chat.anti-spam.prevent-repetition.
          */
-        if (cfg.getBoolean(
-                "chat.anti-spam.prevent-flood",
-                true
-        )) {
-
-
-            if (REPEATED_CHARACTER.matcher(
-                    repetitionMessage
-            ).find()) {
-
-
-                return ModerationResult.blocked(
-                        cfg.getString(
-                                "chat.messages.flood",
-                                "&cPlease avoid character flooding."
-                        ),
-                        "CHARACTER_FLOOD"
-                );
-
-            }
-
-            if (REPEATED_SEQUENCE.matcher(
-                    repetitionMessage.replace(" ", "")
-            ).find()) {
-
-
-                return ModerationResult.blocked(
-                        cfg.getString(
-                                "chat.messages.flood",
-                                "&cPlease avoid repetitive messages."
-                        ),
-                        "REPEATED_SEQUENCE"
-                );
-
-            }
-
-
-
-
-            if (REPEATED_WORD.matcher(
-                    moderationMessage
-            ).find()) {
-
-
-                return ModerationResult.blocked(
-                        cfg.getString(
-                                "chat.messages.flood",
-                                "&cPlease avoid repetitive messages."
-                        ),
-                        "WORD_FLOOD"
-                );
-
-            }
-
+        if (cfg.getBoolean("chat.anti-spam.enabled", true)
+                && !hasBypass(player, cfg, "chat.anti-spam.bypass-permission", "chatmanager.bypass.spam")
+                && cfg.getBoolean("chat.anti-spam.prevent-flood", true)
+                && REPEATED_CHARACTER.matcher(repetitionMessage).find()) {
+            return ModerationResult.blocked(
+                    cfg.getString("chat.messages.flood", "&cPlease avoid character flooding."),
+                    "CHARACTER_FLOOD");
         }
 
-
-
-
-
-
+        if (cfg.getBoolean("chat.anti-spam.enabled", true)
+                && !hasBypass(player, cfg, "chat.anti-spam.bypass-permission", "chatmanager.bypass.spam")
+                && cfg.getBoolean("chat.anti-spam.prevent-repetition", true)) {
+            if (REPEATED_SEQUENCE.matcher(repetitionMessage.replace(" ", "")).find()) {
+                return ModerationResult.blocked(
+                        cfg.getString("chat.messages.flood", "&cPlease avoid repetitive messages."),
+                        "REPEATED_SEQUENCE");
+            }
+            if (REPEATED_WORD.matcher(moderationMessage).find()) {
+                return ModerationResult.blocked(
+                        cfg.getString("chat.messages.flood", "&cPlease avoid repetitive messages."),
+                        "WORD_FLOOD");
+            }
+        }
 
 
 
@@ -506,10 +371,9 @@ public class ChatPipeline {
          *
          * JOIN MY SERVER NOW
          */
-        if (cfg.getBoolean(
-                "chat.anti-spam.prevent-caps",
-                true
-        )) {
+        if (cfg.getBoolean("chat.anti-spam.enabled", true)
+                && !hasBypass(player, cfg, "chat.anti-spam.bypass-permission", "chatmanager.bypass.spam")
+                && cfg.getBoolean("chat.anti-spam.prevent-caps", true)) {
 
 
             int letters =
@@ -569,20 +433,9 @@ public class ChatPipeline {
          * hELLo WoRLD
          * h3ll0 world
          */
-        if (!skipSpamChecks
-                &&
-                cfg.getBoolean(
-                        "chat.no-duplicate.enabled",
-                        true
-                )) {
+        if (cfg.getBoolean("chat.no-duplicate.enabled", true)) {
 
-
-            if (!player.hasPermission(
-                    cfg.getString(
-                            "chat.no-duplicate.bypass-permission",
-                            "chatmanager.bypass.duplicate"
-                    )
-            )) {
+            if (!hasBypass(player, cfg, "chat.no-duplicate.bypass-permission", "chatmanager.bypass.duplicate")) {
 
 
 
@@ -617,32 +470,20 @@ public class ChatPipeline {
         /*
          * Similarity detection
          */
-        if (!skipSpamChecks
-                &&
-                cfg.getBoolean(
-                        "chat.anti-spam.enabled",
-                        true
-                )) {
+        if (cfg.getBoolean("chat.anti-spam.enabled", true)) {
+
+            if (!hasBypass(player, cfg, "chat.anti-spam.bypass-permission", "chatmanager.bypass.spam")) {
 
 
-            if (!player.hasPermission(
-                    cfg.getString(
-                            "chat.anti-spam.bypass-permission",
-                            "chatmanager.bypass.spam"
-                    )
-            )) {
-
-
-                String previous =
-                        duplicateTracker.getPrevious(
-                                uuid
-                        );
+                String previous = duplicateTracker.getPrevious(
+                        uuid,
+                        cfg.getLong("chat.anti-spam.time-window-ms", 10_000L));
 
 
 
                 if (previous != null
-                        &&
-                        previous.length() >= 8) {
+                        && previous.length() >= 4
+                        && normalized.length() >= 4) {
 
 
                     double similarity =
@@ -703,55 +544,28 @@ public class ChatPipeline {
          * matching above, so homoglyph/leetspeak substitution
          * can't be used to dodge this either.
          */
-        if (!skipSpamChecks
-                &&
-                cfg.getBoolean(
-                        "chat.anti-spam.template-detection.enabled",
-                        true
-                )) {
+        if (!skipTemplateChecks
+                && cfg.getBoolean("chat.anti-spam.enabled", true)
+                && cfg.getBoolean("chat.anti-spam.template-detection.enabled", true)) {
+
+            if (!hasBypass(player, cfg, "chat.anti-spam.bypass-permission", "chatmanager.bypass.spam")) {
 
 
-            if (!player.hasPermission(
-                    cfg.getString(
-                            "chat.anti-spam.bypass-permission",
-                            "chatmanager.bypass.spam"
-                    )
-            )) {
-
-
-                double templateScore =
-                        templateSpamAnalyzer.score(
-                                uuid,
-                                repetitionMessage
-                        );
-
-
-                templateSpamAnalyzer.update(
-                        uuid,
-                        repetitionMessage
-                );
-
-
-                double templateThreshold =
-                        cfg.getDouble(
-                                "chat.anti-spam.template-detection.message-word-repeat-ratio",
-                                0.5
-                        );
-
+                double templateScore = templateSpamAnalyzer.score(
+                        uuid, repetitionMessage);
+                double templateThreshold = cfg.getDouble(
+                        "chat.anti-spam.template-detection.message-word-repeat-ratio", 0.5);
 
                 if (templateScore >= templateThreshold) {
-
-
                     return ModerationResult.blocked(
-                            cfg.getString(
-                                    "chat.messages.template-spam",
-                                    "&cPlease stop sending repetitive spam-like messages."
-                            ),
-                            "TEMPLATE_SPAM",
-                            templateScore * 100
-                    );
-
+                            cfg.getString("chat.messages.template-spam",
+                                    "&cPlease stop sending repetitive spam-like messages."),
+                            "TEMPLATE_SPAM", templateScore * 100);
                 }
+
+                // Only accepted messages enter the analysis history. A blocked
+                // attempt must not mutate the baseline used for future scoring.
+                templateSpamAnalyzer.update(uuid, repetitionMessage);
 
             }
 
@@ -775,11 +589,10 @@ public class ChatPipeline {
                 normalized
         );
 
-        Deque<String> rawHistory = rawMessageHistory.computeIfAbsent(uuid, ignored -> new ArrayDeque<>());
-        synchronized (rawHistory) {
-            rawHistory.addLast(normalized);
-            while (rawHistory.size() > RAW_HISTORY_LIMIT) rawHistory.removeFirst();
-        }
+        recentSimilarityTracker.record(
+                uuid, canonicalSpamMessage,
+                cfg.getLong("chat.anti-spam.recent-similarity.time-window-ms",
+                        cfg.getLong("chat.no-duplicate.time-window-ms", 30_000L)));
 
         return ModerationResult.allowed();
 
@@ -793,56 +606,52 @@ public class ChatPipeline {
 
 
 
-    /** Remove words longer than 12 characters before similarity comparison. */
-    private String filterLongWords(String message) {
-        StringBuilder result = new StringBuilder();
-        for (String word : LONG_WORD_SPLIT.split(message.trim())) {
-            if (word.length() <= 12) {
-                if (!result.isEmpty()) result.append(' ');
-                result.append(word);
-            }
+    /**
+     * OP status does not silently disable moderation. Operators can opt into
+     * the historical global bypass with chat.operators-bypass, or receive a
+     * specific bypass node explicitly through permissions.
+     */
+    private boolean hasBypass(Player player, FileConfiguration cfg,
+                              String permissionPath, String defaultPermission) {
+        if (player.isOp() && cfg.getBoolean("chat.operators-bypass", false)) {
+            return true;
         }
-        return result.toString();
+        String permission = cfg.getString(permissionPath, defaultPermission);
+        return permission != null && player.hasPermission(permission);
     }
 
     private boolean isDomainLike(String message) {
-        String expanded = message.toLowerCase(Locale.ROOT)
-                .replaceAll("\\bdot\\b", ".")
-                .replaceAll("\\bd0t\\b", ".");
-        return DOMAIN_PATTERN.matcher(expanded).find();
+        return DomainDetector.containsDomainLike(normalizer.normalizeForDomainDetection(message));
     }
 
-    private double similarityPercentage(String first, String second) {
-        int max = Math.max(first.length(), second.length());
-        if (max == 0) return 1.0;
-        if (Math.abs(first.length() - second.length()) > max * (1.0 - RAW_SIMILARITY_THRESHOLD)) return 0.0;
-        int distance = levenshteinDistance(first, second);
-        return 1.0 - ((double) distance / max);
+
+    /**
+     * Reset stateful moderation trackers after configuration changes. Trackers
+     * whose sizing/window settings are captured at construction are rebuilt in
+     * place; all transient history is cleared so stale messages do not leak
+     * across changed rules.
+     */
+    public void reloadConfiguration() {
+        FileConfiguration cfg = plugin.getConfig();
+        duplicateTracker.reconfigure(
+                cfg.getInt("chat.anti-spam.max-history", 20),
+                cfg.getLong("chat.no-duplicate.time-window-ms", 30_000L));
+        recentSimilarityTracker.reconfigure(
+                cfg.getInt("chat.anti-spam.max-history", 10));
+        templateSpamAnalyzer.reconfigure(
+                cfg.getInt("chat.anti-spam.template-detection.history-window", 20),
+                cfg.getInt("chat.anti-spam.template-detection.word-repeat-count-threshold", 4),
+                cfg.getInt("chat.anti-spam.template-detection.min-significant-words", 2),
+                cfg.getLong("chat.anti-spam.time-window-ms", 10_000L));
+        rateLimiter.clear();
+        phraseMatcher.clearCache();
     }
 
-    private int levenshteinDistance(String first, String second) {
-        if (first.length() < second.length()) return levenshteinDistance(second, first);
-        int n = first.length(), m = second.length();
-        if (m == 0) return n;
-        int[] costs = new int[m + 1];
-        for (int j = 0; j <= m; j++) costs[j] = j;
-        for (int i = 1; i <= n; i++) {
-            int previous = costs[0];
-            costs[0] = i;
-            for (int j = 1; j <= m; j++) {
-                int old = costs[j];
-                costs[j] = first.charAt(i - 1) == second.charAt(j - 1)
-                        ? previous : Math.min(Math.min(costs[j - 1], costs[j]), previous) + 1;
-                previous = old;
-            }
-        }
-        return costs[m];
-    }
 
     /** Drop transient per-player history on quit. */
     public void removePlayer(UUID uuid) {
         if (uuid == null) return;
-        rawMessageHistory.remove(uuid);
+        recentSimilarityTracker.remove(uuid);
         duplicateTracker.remove(uuid);
         templateSpamAnalyzer.remove(uuid);
         rateLimiter.remove(uuid);
@@ -969,6 +778,7 @@ public class ChatPipeline {
 
 
 
+        recentSimilarityTracker.remove(uuid);
         duplicateTracker.remove(
                 uuid
         );
@@ -1004,6 +814,7 @@ public class ChatPipeline {
 
 
         duplicateTracker.clear();
+        recentSimilarityTracker.clear();
 
 
         rateLimiter.clear();

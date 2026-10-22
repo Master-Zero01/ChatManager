@@ -61,11 +61,13 @@ public final class TemplateSpamAnalyzer {
 
 
 
-    private final int windowSize;
+    private volatile int windowSize;
 
-    private final int repeatCountThreshold;
+    private volatile int repeatCountThreshold;
 
-    private final int minSignificantWords;
+    private volatile int minSignificantWords;
+
+    private volatile long timeWindowMillis;
 
 
 
@@ -81,7 +83,7 @@ public final class TemplateSpamAnalyzer {
      * oldest first, used to age counts out
      * of the window.
      */
-    private final Map<UUID, Deque<Set<String>>> history =
+    private final Map<UUID, Deque<WordEntry>> history =
             new ConcurrentHashMap<>();
 
 
@@ -91,16 +93,33 @@ public final class TemplateSpamAnalyzer {
             int repeatCountThreshold,
             int minSignificantWords
     ) {
+        this(windowSize, repeatCountThreshold, minSignificantWords, 10_000L);
+    }
 
-        this.windowSize =
-                Math.max(1, windowSize);
+    public TemplateSpamAnalyzer(
+            int windowSize,
+            int repeatCountThreshold,
+            int minSignificantWords,
+            long timeWindowMillis
+    ) {
+        this.windowSize = Math.max(1, windowSize);
+        this.repeatCountThreshold = Math.max(1, repeatCountThreshold);
+        this.minSignificantWords = Math.max(1, minSignificantWords);
+        this.timeWindowMillis = Math.max(1L, timeWindowMillis);
+    }
 
-        this.repeatCountThreshold =
-                Math.max(1, repeatCountThreshold);
-
-        this.minSignificantWords =
-                Math.max(1, minSignificantWords);
-
+    /** Apply new configuration and discard data scored under old settings. */
+    public void reconfigure(
+            int windowSize,
+            int repeatCountThreshold,
+            int minSignificantWords,
+            long timeWindowMillis
+    ) {
+        this.windowSize = Math.max(1, windowSize);
+        this.repeatCountThreshold = Math.max(1, repeatCountThreshold);
+        this.minSignificantWords = Math.max(1, minSignificantWords);
+        this.timeWindowMillis = Math.max(1L, timeWindowMillis);
+        clear();
     }
 
 
@@ -135,29 +154,22 @@ public final class TemplateSpamAnalyzer {
         }
 
 
-        Map<String, Integer> counts =
-                wordCounts.get(uuid);
-
-        if (counts == null) {
+        Deque<WordEntry> deque = history.get(uuid);
+        Map<String, Integer> counts = wordCounts.get(uuid);
+        if (deque == null || counts == null) {
             return 0;
         }
 
-
-        int repeated = 0;
-
-        for (String word : words) {
-
-            if (counts.getOrDefault(word, 0)
-                    >= repeatCountThreshold) {
-
-                repeated++;
-
+        synchronized (deque) {
+            pruneExpired(uuid, deque, counts, System.nanoTime());
+            int repeated = 0;
+            for (String word : words) {
+                if (counts.getOrDefault(word, 0) >= repeatCountThreshold) {
+                    repeated++;
+                }
             }
-
+            return (double) repeated / words.size();
         }
-
-
-        return (double) repeated / words.size();
 
     }
 
@@ -178,58 +190,53 @@ public final class TemplateSpamAnalyzer {
         }
 
 
-        Set<String> words =
-                significantWords(message);
-
+        Set<String> words = significantWords(message);
         if (words.isEmpty()) {
             return;
         }
 
-
-        Map<String, Integer> counts =
-                wordCounts.computeIfAbsent(
-                        uuid,
-                        key -> new ConcurrentHashMap<>()
-                );
-
-
-        Deque<Set<String>> deque =
-                history.computeIfAbsent(
-                        uuid,
-                        key -> new ArrayDeque<>()
-                );
-
+        Map<String, Integer> counts = wordCounts.computeIfAbsent(
+                uuid, key -> new ConcurrentHashMap<>());
+        Deque<WordEntry> deque = history.computeIfAbsent(
+                uuid, key -> new ArrayDeque<>());
 
         synchronized (deque) {
-
+            long now = System.nanoTime();
+            pruneExpired(uuid, deque, counts, now);
             for (String word : words) {
                 counts.merge(word, 1, Integer::sum);
             }
-
-            deque.addLast(words);
-
+            deque.addLast(new WordEntry(words, now));
             while (deque.size() > windowSize) {
-
-                Set<String> oldest =
-                        deque.removeFirst();
-
-                for (String word : oldest) {
-
-                    counts.computeIfPresent(
-                            word,
-                            (key, count) ->
-                                    count <= 1 ? null : count - 1
-                    );
-
-                }
-
+                removeEntry(deque.removeFirst(), counts);
             }
-
         }
-
     }
 
+    private void pruneExpired(UUID uuid, Deque<WordEntry> deque,
+                              Map<String, Integer> counts, long nowNanos) {
+        long windowNanos = timeWindowMillis > Long.MAX_VALUE / 1_000_000L
+                ? Long.MAX_VALUE : Math.max(1L, timeWindowMillis) * 1_000_000L;
+        while (!deque.isEmpty() && nowNanos - deque.peekFirst().recordedNanos > windowNanos) {
+            removeEntry(deque.removeFirst(), counts);
+        }
+    }
 
+    private void removeEntry(WordEntry entry, Map<String, Integer> counts) {
+        for (String word : entry.words) {
+            counts.computeIfPresent(word, (key, count) -> count <= 1 ? null : count - 1);
+        }
+    }
+
+    private static final class WordEntry {
+        private final Set<String> words;
+        private final long recordedNanos;
+
+        private WordEntry(Set<String> words, long recordedNanos) {
+            this.words = words;
+            this.recordedNanos = recordedNanos;
+        }
+    }
 
 
     /**

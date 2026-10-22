@@ -26,6 +26,9 @@ public class ReloadCommand implements CommandExecutor {
         }
 
         plugin.reloadConfig();
+        if (plugin.getChatPipeline() != null) {
+            plugin.getChatPipeline().reloadConfiguration();
+        }
 
         // Restart tasks that depend on the config
         plugin.startBroadcastTask();

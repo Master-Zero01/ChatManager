@@ -6,6 +6,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.me.chatManager.ChatManager;
 import org.me.chatManager.util.ChatUtil;
+import org.me.chatManager.util.ColorCodeSanitizer;
 import org.me.chatManager.util.IgnoreUtil;
 import org.me.chatManager.util.ToggleUtil;
 
@@ -92,12 +93,13 @@ public class WhisperCommand implements CommandExecutor, TabCompleter {
         // ==============================
         // Color permission
         // ==============================
-        if (cfg.getBoolean("whisper.allow-color", true)) {
-            if (player.hasPermission("chatmanager.whisper.color")) {
-                rawMessage = ChatUtil.color(rawMessage);
-            } else {
-                rawMessage = rawMessage.replaceAll("&(?i)[0-9a-fk-or]", "");
-            }
+        if (cfg.getBoolean("whisper.allow-color", true)
+                && player.hasPermission("chatmanager.whisper.color")) {
+            rawMessage = ChatUtil.color(rawMessage);
+        } else {
+            // Remove all supported marker forms before the final message template
+            // is colorized, or user-supplied codes would inherit the template's permission.
+            rawMessage = ColorCodeSanitizer.strip(rawMessage);
         }
 
         if (ChatUtil.stripColor(rawMessage).trim().isEmpty()) {

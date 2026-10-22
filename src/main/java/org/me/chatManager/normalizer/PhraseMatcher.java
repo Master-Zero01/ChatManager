@@ -1,9 +1,10 @@
 package org.me.chatManager.normalizer;
 
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 
 
 /**
@@ -32,8 +33,17 @@ public final class PhraseMatcher {
     /**
      * Cached normalized strings.
      */
-    private final Map<String, String> normalizedCache =
-            new ConcurrentHashMap<>();
+    private static final int MAX_CACHE_ENTRIES = 1024;
+    private static final int MAX_CACHEABLE_INPUT_LENGTH = 128;
+
+    // Bounded LRU: never retain arbitrary chat messages indefinitely.
+    private final Map<String, String> normalizedCache = Collections.synchronizedMap(
+            new LinkedHashMap<>(128, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+                    return size() > MAX_CACHE_ENTRIES;
+                }
+            });
 
 
     private final HomoglyphNormalizer homoglyphNormalizer =
@@ -59,27 +69,16 @@ public final class PhraseMatcher {
 
 
 
-        String cached =
-                normalizedCache.get(input);
-
-
-
-        if (cached != null) {
-
-            return cached;
-
+        boolean cacheable = input.length() <= MAX_CACHEABLE_INPUT_LENGTH;
+        if (cacheable) {
+            String cached = normalizedCache.get(input);
+            if (cached != null) {
+                return cached;
+            }
         }
 
-
-
-
-
-        String normalized =
-                homoglyphNormalizer.normalize(
-                        input
-                );
-
-
+        // Leetspeak mappings are intentionally included for phrase matching.
+        String normalized = homoglyphNormalizer.normalizeForComparison(input);
 
 
 
@@ -126,11 +125,9 @@ public final class PhraseMatcher {
 
 
 
-        normalizedCache.put(
-                input,
-                result
-        );
-
+        if (cacheable) {
+            normalizedCache.put(input, result);
+        }
 
 
         return result;

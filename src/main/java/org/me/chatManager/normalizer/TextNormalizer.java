@@ -244,8 +244,12 @@ public class TextNormalizer {
 
 
 
+        // The moderation path intentionally uses the aggressive mapping table
+        // (0->o, 3->e, etc.) so common leetspeak variants cannot evade phrase
+        // filters or spam comparisons. Repetition checks still receive the
+        // uncollapsed result, so long runs remain visible.
         String text =
-                homoglyphNormalizer.normalize(
+                homoglyphNormalizer.normalizeForModeration(
                         input
                 );
 
@@ -330,14 +334,16 @@ public class TextNormalizer {
 
 
 
-    /**
-     * Removes spacing differences.
-     *
-     * Used by:
-     *
-     * - duplicate detection
-     * - similarity comparison
-     */
+    /** Normalize Unicode lookalikes while preserving punctuation for URL detection. */
+    public String normalizeForDomainDetection(String input) {
+        if (input == null) {
+            return "";
+        }
+        return homoglyphNormalizer.normalize(input).toLowerCase(Locale.ROOT);
+    }
+
+
+    /** Removes spacing differences for duplicate and similarity comparison. */
     public String normalizeComparison(
             String input
     ) {

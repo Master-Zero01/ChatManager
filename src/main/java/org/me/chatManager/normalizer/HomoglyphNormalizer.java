@@ -236,6 +236,23 @@ public final class HomoglyphNormalizer {
 
 
     /**
+     * Moderation normalization that applies leetspeak mappings while
+     * preserving normalized word boundaries for spam and repetition checks.
+     */
+    public String normalizeForModeration(String input) {
+        String text = normalize(input);
+        StringBuilder out = new StringBuilder(text.length());
+        for (char c : text.toCharArray()) {
+            out.append(LEETSPEAK.getOrDefault(c, c));
+        }
+        text = out.toString().toLowerCase(Locale.ROOT);
+        text = text.replaceAll("[^a-z0-9\\s]", "");
+        text = text.replaceAll("\\s+", " ");
+        return text.trim();
+    }
+
+
+    /**
      * Aggressive comparison normalization.
      *
      * Used for:

@@ -6,242 +6,135 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-
-/**
- * Tracks previous messages per player.
- *
- * Used by:
- *
- * - duplicate detection
- * - similarity checks
- * - repetition detection
- * - spam history
- */
+/** Bounded, per-player message history for duplicate and adjacent-similarity checks. */
 public class DuplicateTracker {
 
+    private final Map<UUID, Deque<TrackedMessage>> messages = new ConcurrentHashMap<>();
+    private volatile int maxHistory;
+    private volatile long timeWindowMillis;
 
-    private final Map<UUID, Deque<String>> messages =
-            new ConcurrentHashMap<>();
-
-
-    private final int maxHistory;
-
-
-
-    public DuplicateTracker(
-            int maxHistory
-    ) {
-
-        this.maxHistory =
-                Math.max(
-                        1,
-                        maxHistory
-                );
+    public DuplicateTracker(int maxHistory) {
+        this(maxHistory, 10_000L);
     }
 
-
-
-
-    /**
-     * Checks if message matches
-     * the latest message.
-     */
-    public boolean isDuplicate(
-            UUID uuid,
-            String normalized
-    ) {
-
-        if (uuid == null ||
-                normalized == null ||
-                normalized.isEmpty()) {
-
-            return false;
-        }
-
-
-        Deque<String> history =
-                messages.get(uuid);
-
-
-        if (history == null ||
-                history.isEmpty()) {
-
-            return false;
-        }
-
-
-        synchronized (history) {
-
-            return normalized.equals(
-                    history.peekLast()
-            );
-        }
+    public DuplicateTracker(int maxHistory, long timeWindowMillis) {
+        this.maxHistory = Math.max(1, maxHistory);
+        this.timeWindowMillis = Math.max(1L, timeWindowMillis);
     }
 
+    /** True when the normalized message appears anywhere in the retained history. */
+    public boolean isDuplicate(UUID uuid, String normalized) {
+        return hasRecentMessage(uuid, normalized);
+    }
 
-
-
-
-    /**
-     * Checks whether this player
-     * recently sent this message.
-     */
-    public boolean hasRecentMessage(
-            UUID uuid,
-            String normalized
-    ) {
-
-        if (uuid == null ||
-                normalized == null) {
-
+    public boolean hasRecentMessage(UUID uuid, String normalized) {
+        if (uuid == null || normalized == null) {
             return false;
         }
-
-
-        Deque<String> history =
-                messages.get(uuid);
-
-
+        Deque<TrackedMessage> history = messages.get(uuid);
         if (history == null) {
             return false;
         }
-
-
         synchronized (history) {
-
-            return history.contains(normalized);
+            pruneExpired(history, System.nanoTime());
+            for (TrackedMessage entry : history) {
+                if (normalized.equals(entry.message)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
-
-
-
-
-    /**
-     * Adds a normalized message.
-     */
-    public void update(
-            UUID uuid,
-            String normalized
-    ) {
-
-        if (uuid == null ||
-                normalized == null ||
-                normalized.isEmpty()) {
-
+    public void update(UUID uuid, String normalized) {
+        if (uuid == null || normalized == null || normalized.isEmpty()) {
             return;
         }
-
-
-        Deque<String> history =
-                messages.computeIfAbsent(
-                        uuid,
-                        k -> new ArrayDeque<>()
-                );
-
-
+        Deque<TrackedMessage> history = messages.computeIfAbsent(uuid, ignored -> new ArrayDeque<>());
         synchronized (history) {
-
-
-            history.addLast(normalized);
-
-
+            long now = System.nanoTime();
+            pruneExpired(history, now);
+            history.addLast(new TrackedMessage(normalized, now));
             while (history.size() > maxHistory) {
-
                 history.removeFirst();
-
             }
         }
     }
 
-
-
-
-
-    /**
-     * Returns message history copy.
-     *
-     * Used by similarity checks.
-     */
-    public Deque<String> getHistory(
-            UUID uuid
-    ) {
-
-        Deque<String> history =
-                messages.get(uuid);
-
-
+    /** A detached copy of unexpired messages, oldest first. */
+    public Deque<String> getHistory(UUID uuid) {
+        Deque<String> result = new ArrayDeque<>();
+        Deque<TrackedMessage> history = uuid == null ? null : messages.get(uuid);
         if (history == null) {
-
-            return new ArrayDeque<>();
-
+            return result;
         }
-
-
         synchronized (history) {
-
-            return new ArrayDeque<>(history);
-
+            pruneExpired(history, System.nanoTime());
+            for (TrackedMessage entry : history) {
+                result.addLast(entry.message);
+            }
         }
+        return result;
     }
 
+    public String getPrevious(UUID uuid) {
+        return getPrevious(uuid, timeWindowMillis);
+    }
 
-
-
-
-    /**
-     * Returns latest message.
-     */
-    public String getPrevious(
-            UUID uuid
-    ) {
-
-        Deque<String> history =
-                messages.get(uuid);
-
-
-        if (history == null ||
-                history.isEmpty()) {
-
+    /** Return the most recent message only if it is within the requested age limit. */
+    public String getPrevious(UUID uuid, long maxAgeMillis) {
+        Deque<TrackedMessage> history = uuid == null ? null : messages.get(uuid);
+        if (history == null) {
             return null;
         }
-
-
+        long now = System.nanoTime();
         synchronized (history) {
-
-            return history.peekLast();
-
+            pruneExpired(history, now);
+            TrackedMessage latest = history.peekLast();
+            if (latest == null || now - latest.recordedNanos > millisToNanos(maxAgeMillis)) {
+                return null;
+            }
+            return latest.message;
         }
     }
 
+    /** Reapply config-backed limits without requiring a server restart. */
+    public void reconfigure(int maxHistory, long timeWindowMillis) {
+        this.maxHistory = Math.max(1, maxHistory);
+        this.timeWindowMillis = Math.max(1L, timeWindowMillis);
+        clear();
+    }
 
-
-
-
-    /**
-     * Removes player data.
-     */
-    public void remove(
-            UUID uuid
-    ) {
-
+    public void remove(UUID uuid) {
         if (uuid != null) {
-
             messages.remove(uuid);
-
         }
     }
 
-
-
-
-
-    /**
-     * Clears all tracking.
-     */
     public void clear() {
-
         messages.clear();
+    }
 
+    private void pruneExpired(Deque<TrackedMessage> history, long nowNanos) {
+        long windowNanos = millisToNanos(timeWindowMillis);
+        while (!history.isEmpty() && nowNanos - history.peekFirst().recordedNanos > windowNanos) {
+            history.removeFirst();
+        }
+    }
+
+    private static long millisToNanos(long millis) {
+        return millis > Long.MAX_VALUE / 1_000_000L
+                ? Long.MAX_VALUE
+                : Math.max(1L, millis) * 1_000_000L;
+    }
+
+    private static final class TrackedMessage {
+        private final String message;
+        private final long recordedNanos;
+
+        private TrackedMessage(String message, long recordedNanos) {
+            this.message = message;
+            this.recordedNanos = recordedNanos;
+        }
     }
 }

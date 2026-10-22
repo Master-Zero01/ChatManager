@@ -10,6 +10,12 @@ chat:
 
   log-to-console: true
 
+  # Operators are moderated by default. When true, operators bypass all
+  # moderation checks, including anti-spam. Set false if operator chat should
+  # be filtered like regular player chat. Explicit bypass permission nodes
+  # still work regardless of this setting.
+  operators-bypass: false
+
 
   # ======================================================
   # Unicode / Normalization
@@ -109,6 +115,10 @@ chat:
 
     enabled: true
 
+    # How long an exact normalized repeat remains blocked, even if other
+    # messages are sent in between. This is independent of the similarity window.
+    time-window-ms: 30000
+
     bypass-permission: "chatmanager.bypass.duplicate"
 
 
@@ -128,19 +138,22 @@ chat:
     # Similarity percentage
     similarity-threshold: 90
 
-    # Compare a new message against the last three accepted messages, not just
-    # the immediately previous message. Long tokens (>12 chars) are excluded
-    # from this comparison to reduce false positives from coordinates / IDs.
+    # Compare against up to max-history accepted messages. Trailing standalone
+    # tokens of 12+ characters are removed from spam comparison signatures, so
+    # appending a random ID cannot defeat duplicate/similarity checks. This does
+    # not modify the displayed message or phrase/link filtering.
     recent-similarity:
       enabled: true
       threshold: 0.80
+      time-window-ms: 30000
 
 
     # Messages stored per player
     max-history: 20
 
 
-    # Analysis time window
+    # Age limit for near-similarity and template-analysis history.
+    # Exact duplicates use chat.no-duplicate.time-window-ms instead.
     time-window-ms: 10000
 
 

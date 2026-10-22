@@ -1,5 +1,5 @@
 name: ChatManager
-version: '6.4'
+version: '6.7'
 main: org.me.chatManager.ChatManager
 api-version: '1.21.11'
 author: _MasterZero
@@ -103,22 +103,22 @@ permissions:
 
   chatmanager.bypass.cooldown:
     description: Bypass chat cooldown.
-    default: op
+    default: false
 
 
   chatmanager.bypass.duplicate:
     description: Bypass duplicate message detection.
-    default: op
+    default: false
 
 
   chatmanager.bypass.spam:
     description: Bypass anti-spam checks.
-    default: op
+    default: false
 
 
   chatmanager.bypass.phrases:
     description: Bypass phrase filtering.
-    default: op
+    default: false
 
 
   chatmanager.notify:
